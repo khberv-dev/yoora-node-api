@@ -31,16 +31,17 @@ There are no tests and no `test/` folder yet, although the `lint` and `format` s
 
 ## Architecture
 
-- **Auth (`common/guards/api-key.guard.ts`).** `ApiKeyGuard` is a global `APP_GUARD` and covers every route, including the `GET /` health check. It compares the SHA-256 of the `x-api-key` header with that of `API_KEY` in constant time. A missing or wrong key returns 401. There is no `@Public()` escape hatch. If a route ever needs one, add a decorator and check it in the guard.
+- **Auth (`common/guards/api-key.guard.ts`).** `ApiKeyGuard` is a global `APP_GUARD`. It compares the SHA-256 of the `x-api-key` header with that of `API_KEY` in constant time. A missing or wrong key returns 401. Routes marked `@Public()` (`common/decorators/public.decorator.ts`) skip the check. Only `GET /health` (returns `{ok: true}`, for load balancers and monitoring) is public; keep it that way for anything that touches `wg0`.
 - **Errors.** `ApiErrorLoggingFilter` logs every failed request, including its body and headers. Headers pass through `redactHeaders` (`common/utils/http-log.util.ts`), which masks `x-api-key`, `authorization` and `cookie`. Add any new secret header to that set.
 - **Validation.** The global `ValidationPipe` uses `whitelist` + `forbidNonWhitelisted` + `transform`, so unknown body fields return 400.
 - **No global prefix, no CORS.** The service talks only to the main server, so it has no `/v{N}` prefix and no `enableCors`.
 - **System (`modules/system`).** `ShellService` wraps `execFile` (no shell, 10s timeout, 1 MB buffer). `WgProcessService` builds `awg set wg0 peer ...` / `awg show wg0 dump` on top of it and is the module's only export. The `awg` CLI and a configured `wg0` interface must exist on the host, so these calls fail locally on macOS. To try them locally, put a stub `awg` script first on `PATH`.
-- **Connection (`modules/core`).** `ConnectionController` → `ConnectionService` → `WgProcessService`. This node is stateless: the main server generates keys and allocates IPs, and this node only applies them to `wg0`.
-  - `POST connection {publicKey, ip}` registers the peer with `allowed-ips <ip>/32` and returns 201 `{publicKey, ip: "<ip>/32"}`. `ip` must be a bare IPv4 address. Re-posting an existing key updates its allowed IPs.
-  - `DELETE connection {publicKey}` returns 204. The key goes in the body because base64 keys contain `/`.
+- **Connection (`modules/core`).** `ConnectionController` → `ConnectionService` → `CryptService` + `WgProcessService`. The node generates keys and assigns IPs itself; the main server only sends the API key, never a body.
+  - `POST connection` (no body) generates an x25519 key pair (`modules/crypt`, copied from the main server), takes the lowest free IP in `10.0.0.2`–`.254`, and registers the peer with `allowed-ips <ip>/32`. It returns 201 `{private, public, ip: "10.0.0.N/32", serverPublicKey}`, the same shape the main server used to build itself. The private key is not stored anywhere, so this response is the only copy.
+  - `DELETE connection/:ip` (bare IPv4, e.g. `10.0.0.3`) removes the peer that holds that IP. It returns 204, or 404 if no peer has it.
   - `GET connection` parses `awg show wg0 dump` into `[{publicKey, endpoint, allowedIps, latestHandshake, transferRx, transferTx}]`. It skips the dump's first line on purpose, because that line holds the interface **private key**.
-  - `publicKey` is validated as a 44-character base64 WireGuard key (`WG_KEY_PATTERN` in `dto/peer-key.dto.ts`). If `awg` fails, `ShellService` logs stderr and the request returns 500.
+- **IP allocation needs no storage.** The used IPs are read from the `wg0` dump on every connect, so allocation survives restarts and reuses freed IPs. `connect()` runs one request at a time through a promise-chain lock, so concurrent requests can't get the same IP. This only holds inside a single process: never run two instances against the same `wg0`. When the subnet is full, the request returns 503.
+- **Server public key.** It comes from `awg show wg0 public-key` on the first connect and is cached for the life of the process (no longer hardcoded). If `awg` fails, `ShellService` logs stderr and the request returns 500.
 
 ## Conventions
 

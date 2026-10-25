@@ -20,6 +20,10 @@ export class WgProcessService {
     await this.shell.run('awg', ['set', 'wg0', 'peer', publicKey, 'remove']);
   }
 
+  async publicKey() {
+    return this.shell.run('awg', ['show', 'wg0', 'public-key']);
+  }
+
   async status() {
     return this.shell.run('awg', ['show', 'wg0', 'dump']);
   }

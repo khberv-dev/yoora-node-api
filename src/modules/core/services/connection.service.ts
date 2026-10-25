@@ -1,5 +1,15 @@
-import { Injectable } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+import { CryptService } from '../../crypt/crypt.service.js';
 import { WgProcessService } from '../../system/wg-process.service.js';
+
+// Tunnel subnet 10.0.0.0/24: .1 is the server, peers get .2 - .254.
+const SUBNET_PREFIX = '10.0.0.';
+const FIRST_HOST = 2;
+const LAST_HOST = 254;
 
 export interface Peer {
   publicKey: string;
@@ -12,15 +22,28 @@ export interface Peer {
 
 @Injectable()
 export class ConnectionService {
-  constructor(private readonly wgProcess: WgProcessService) {}
+  private serverPublicKey?: string;
+  // Serializes connect() so two concurrent requests can't take the same IP.
+  private lock: Promise<unknown> = Promise.resolve();
 
-  async addPeer(publicKey: string, ip: string) {
-    await this.wgProcess.addPeer(publicKey, ip);
-    return { publicKey, ip: `${ip}/32` };
+  constructor(
+    private readonly cryptService: CryptService,
+    private readonly wgProcess: WgProcessService,
+  ) {}
+
+  connect() {
+    const result = this.lock.then(() => this.createPeer());
+    this.lock = result.catch(() => undefined);
+    return result;
   }
 
-  async removePeer(publicKey: string) {
-    await this.wgProcess.removePeer(publicKey);
+  async disconnect(ip: string) {
+    const allowedIp = `${ip}/32`;
+    const peer = (await this.listPeers()).find((p) =>
+      p.allowedIps.includes(allowedIp),
+    );
+    if (!peer) throw new NotFoundException();
+    await this.wgProcess.removePeer(peer.publicKey);
   }
 
   async listPeers(): Promise<Peer[]> {
@@ -45,5 +68,32 @@ export class ConnectionService {
           transferTx: Number(tx),
         };
       });
+  }
+
+  private async createPeer() {
+    const ip = await this.allocateIp();
+    const keys = this.cryptService.generateKeys();
+    await this.wgProcess.addPeer(keys.public, ip);
+    return {
+      ...keys,
+      ip: `${ip}/32`,
+      serverPublicKey: await this.getServerPublicKey(),
+    };
+  }
+
+  // wg0 is the source of truth for which IPs are taken, so allocation
+  // survives restarts and needs no storage.
+  private async allocateIp() {
+    const used = new Set((await this.listPeers()).flatMap((p) => p.allowedIps));
+    for (let host = FIRST_HOST; host <= LAST_HOST; host++) {
+      const ip = `${SUBNET_PREFIX}${host}`;
+      if (!used.has(`${ip}/32`)) return ip;
+    }
+    throw new ServiceUnavailableException('No free tunnel IPs');
+  }
+
+  private async getServerPublicKey() {
+    this.serverPublicKey ??= await this.wgProcess.publicKey();
+    return this.serverPublicKey;
   }
 }

@@ -1,15 +1,14 @@
 import {
-  Body,
   Controller,
   Delete,
   Get,
   HttpCode,
   HttpStatus,
+  Param,
   Post,
 } from '@nestjs/common';
 import { ConnectionService } from '../services/connection.service.js';
-import { AddPeerDto } from '../dto/add-peer.dto.js';
-import { PeerKeyDto } from '../dto/peer-key.dto.js';
+import { PeerIpParam } from '../dto/peer-ip-param.dto.js';
 
 @Controller('connection')
 export class ConnectionController {
@@ -21,14 +20,13 @@ export class ConnectionController {
   }
 
   @Post()
-  addPeer(@Body() dto: AddPeerDto) {
-    return this.connectionService.addPeer(dto.publicKey, dto.ip);
+  connect() {
+    return this.connectionService.connect();
   }
 
-  // The key goes in the body rather than the path because base64 contains '/'.
-  @Delete()
+  @Delete(':ip')
   @HttpCode(HttpStatus.NO_CONTENT)
-  removePeer(@Body() dto: PeerKeyDto) {
-    return this.connectionService.removePeer(dto.publicKey);
+  disconnect(@Param() { ip }: PeerIpParam) {
+    return this.connectionService.disconnect(ip);
   }
 }
