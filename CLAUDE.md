@@ -41,7 +41,7 @@ There are no tests and no `test/` folder yet, although the `lint` and `format` s
   - `DELETE connection/:ip` (bare IPv4, e.g. `10.0.0.3`) removes the peer that holds that IP. It returns 204, or 404 if no peer has it.
   - `GET connection` parses `awg show wg0 dump` into `[{publicKey, endpoint, allowedIps, latestHandshake, transferRx, transferTx}]`. It skips the dump's first line on purpose, because that line holds the interface **private key**.
 - **IP allocation needs no storage.** The used IPs are read from the `wg0` dump on every connect, so allocation survives restarts and reuses freed IPs. `connect()` runs one request at a time through a promise-chain lock, so concurrent requests can't get the same IP. This only holds inside a single process: never run two instances against the same `wg0`. When the subnet is full, the request returns 503.
-- **Server public key.** It comes from `awg show wg0 public-key` on the first connect and is cached for the life of the process (no longer hardcoded). If `awg` fails, `ShellService` logs stderr and the request returns 500.
+- **Startup.** `ConnectionService.onApplicationBootstrap` runs before the app starts listening. It reads the server public key (`awg show wg0 public-key`, kept for the life of the process) and logs `wg0 up: port …, public key …, peers N/253 (M active)`, where active means a handshake within the last 180s. If `awg` or `wg0` is unavailable, startup fails with exit code 1 instead of serving requests that would all 500. Locally, this means a stub `awg` script must be on `PATH` even to boot. If `awg` fails during a request, `ShellService` logs stderr and the request returns 500.
 
 ## Conventions
 

@@ -1,6 +1,8 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
+  OnApplicationBootstrap,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { CryptService } from '../../crypt/crypt.service.js';
@@ -10,6 +12,8 @@ import { WgProcessService } from '../../system/wg-process.service.js';
 const SUBNET_PREFIX = '10.0.0.';
 const FIRST_HOST = 2;
 const LAST_HOST = 254;
+// WireGuard re-handshakes every 2 minutes while a tunnel is in use.
+const ACTIVE_HANDSHAKE_SECONDS = 180;
 
 export interface Peer {
   publicKey: string;
@@ -21,8 +25,9 @@ export interface Peer {
 }
 
 @Injectable()
-export class ConnectionService {
-  private serverPublicKey?: string;
+export class ConnectionService implements OnApplicationBootstrap {
+  private readonly logger = new Logger(ConnectionService.name);
+  private serverPublicKey: string;
   // Serializes connect() so two concurrent requests can't take the same IP.
   private lock: Promise<unknown> = Promise.resolve();
 
@@ -30,6 +35,23 @@ export class ConnectionService {
     private readonly cryptService: CryptService,
     private readonly wgProcess: WgProcessService,
   ) {}
+
+  // Runs before the app starts listening; if wg0 is unreachable this throws
+  // and startup fails, rather than serving requests that would all 500.
+  async onApplicationBootstrap() {
+    this.serverPublicKey = await this.wgProcess.publicKey();
+    const listenPort = await this.wgProcess.listenPort();
+    const peers = await this.listPeers();
+    const now = Date.now() / 1000;
+    const active = peers.filter(
+      (p) => now - p.latestHandshake < ACTIVE_HANDSHAKE_SECONDS,
+    ).length;
+
+    this.logger.log(
+      `wg0 up: port ${listenPort}, public key ${this.serverPublicKey}, ` +
+        `peers ${peers.length}/${LAST_HOST - FIRST_HOST + 1} (${active} active)`,
+    );
+  }
 
   connect() {
     const result = this.lock.then(() => this.createPeer());
@@ -77,7 +99,7 @@ export class ConnectionService {
     return {
       ...keys,
       ip: `${ip}/32`,
-      serverPublicKey: await this.getServerPublicKey(),
+      serverPublicKey: this.serverPublicKey,
     };
   }
 
@@ -90,10 +112,5 @@ export class ConnectionService {
       if (!used.has(`${ip}/32`)) return ip;
     }
     throw new ServiceUnavailableException('No free tunnel IPs');
-  }
-
-  private async getServerPublicKey() {
-    this.serverPublicKey ??= await this.wgProcess.publicKey();
-    return this.serverPublicKey;
   }
 }

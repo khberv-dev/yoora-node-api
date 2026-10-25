@@ -24,6 +24,10 @@ export class WgProcessService {
     return this.shell.run('awg', ['show', 'wg0', 'public-key']);
   }
 
+  async listenPort() {
+    return this.shell.run('awg', ['show', 'wg0', 'listen-port']);
+  }
+
   async status() {
     return this.shell.run('awg', ['show', 'wg0', 'dump']);
   }
